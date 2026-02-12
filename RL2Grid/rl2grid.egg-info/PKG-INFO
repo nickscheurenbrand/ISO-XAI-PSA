@@ -1,0 +1,23 @@
+Metadata-Version: 2.4
+Name: rl2grid
+Version: 0.1.0
+Summary: A torch modular RL library for power grids
+Home-page: 
+Author: emarche
+Author-email: emarche@mit.edu
+Classifier: Development Status :: 4 - Beta
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3.12.2
+License-File: LICENSE
+Requires-Dist: grid2op==1.11.0
+Requires-Dist: lightsim2grid==0.9
+Requires-Dist: gymnasium==0.29.1
+Requires-Dist: stable_baselines3
+Requires-Dist: wandb
+Requires-Dist: tensorboard
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: license-file
+Dynamic: requires-dist
+Dynamic: summary

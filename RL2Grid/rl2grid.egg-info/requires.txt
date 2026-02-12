@@ -1,0 +1,6 @@
+grid2op==1.11.0
+lightsim2grid==0.9
+gymnasium==0.29.1
+stable_baselines3
+wandb
+tensorboard
