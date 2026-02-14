@@ -46,14 +46,11 @@ def get_feature_names(g2op_env, args, config) -> Tuple[List[str], Dict[str, List
         obs_attrs += state_attrs['maintenance']
 
     env_type = args.action_type.lower()
-    if env_type == 'topology':
-        obs_attrs += state_attrs['topology']
-    else:
-        obs_attrs += state_attrs['redispatch']
-        if env_config[env_id]['renewable']:
-            obs_attrs += state_attrs['curtailment']
-        if env_config[env_id]['battery']:
-            obs_attrs += state_attrs['storage']
+    obs_attrs += state_attrs['redispatch']
+    if env_config[env_id]['renewable']:
+        obs_attrs += state_attrs['curtailment']
+    if env_config[env_id]['battery']:
+        obs_attrs += state_attrs['storage']
 
     feature_names: List[str] = []
     feature_index: Dict[str, List[int]] = {}
@@ -77,12 +74,6 @@ def get_feature_names(g2op_env, args, config) -> Tuple[List[str], Dict[str, List
         indices = list(range(start, start + len(names)))
         feature_index.setdefault(attr, []).extend(indices)
     return feature_names, feature_index
-
-
-def _extract_feature(obs: np.ndarray, indices: List[int]) -> np.ndarray:
-    if not indices:
-        raise ValueError("Requested feature slice is empty.")
-    return obs[indices]
 
 
 def _collect_rollouts(
@@ -132,11 +123,6 @@ def _build_dataloader(states: Sequence[np.ndarray], batch_size: int) -> DataLoad
     return DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
 
-def _safe_action_template(actions: Sequence[np.ndarray]) -> torch.Tensor:
-    stacked = np.stack(actions)
-    return torch.tensor(stacked.mean(axis=0), dtype=torch.float32)
-
-
 def _extract_dispatch_vector(obs: np.ndarray, feature_index: Dict[str, List[int]], attr: str) -> np.ndarray:
     if attr in feature_index:
         return obs[feature_index[attr]]
@@ -171,9 +157,9 @@ def main() -> None:
     parser.add_argument("--projection-dim", type=int, default=64)
     parser.add_argument("--train-epochs", type=int, default=10)
     parser.add_argument("--overload-threshold", type=float, default=1.02)
-    parser.add_argument("--max-overload-cases", type=int, default=5)
+    parser.add_argument("--max-overload-cases", type=int, default=10)
     parser.add_argument("--n-noisy", type=int, default=10, help="Number of noisy CF samples per base counterfactual")
-    parser.add_argument("--noise-std", type=float, default=0.01, help="Std dev of Gaussian noise added to state")
+    parser.add_argument("--noise-std", type=float, default=0.001, help="Std dev of Gaussian noise added to state")
     parser.add_argument(
         "--comparison-file",
         type=str,
@@ -183,7 +169,7 @@ def main() -> None:
     parser.add_argument(
         "--diff-plot",
         type=str,
-        default="counterfactual_diff.pdf",
+        default="counterfactual_diff.png",
         help="Path to save per-case noisy CF robustness plot.",
     )
     args = parser.parse_args()
@@ -236,9 +222,8 @@ def main() -> None:
             "feature",
             "original",
             "counterfactual",
-            "delta",
+            "counterfactual_nextStep",
             "fault_flag",
-            "cf_rho_violation",
         ])
 
         for idx, state in enumerate(overload_states[: args.max_overload_cases]):
@@ -259,51 +244,34 @@ def main() -> None:
             )
 
             cf_np = cf_state.detach().cpu().numpy().reshape(-1)
-            cf_dispatch = _extract_dispatch_vector(cf_np, feature_index, dispatch_attr)
+            with torch.no_grad():
+                cf_action = agent.get_eval_continuous_action(
+                    torch.tensor(cf_np, dtype=torch.float32, device=device).unsqueeze(0)
+                )
+            step_obs, _, _, _, _ = env.step(cf_action.detach().cpu().numpy())
+            next_rho_vals = step_obs[0][rho_indices] if rho_indices else np.array([])
 
-            print("-" * 60)
-            print(f"Case {idx+1}:")
-            cf_rho = _extract_dispatch_vector(cf_np, feature_index, 'rho') if 'rho' in feature_index else np.array([])
-            safe = cf_rho.size == 0 or cf_rho.max() < 1.0
 
-            print(f"  Planned dispatch: {np.round(planned_dispatch, 3)}")
-            print(f"  Counterfactual dispatch: {np.round(cf_dispatch, 3)}")
-            status = "SAFE" if safe else "WARNING: rho>=1 detected"
-            print(f"  Grid safety status: {status}")
-
-            # Check generation limits
-            if train_args.norm_obs:
-                print("  [NOTE] Observations normalized; raw value comparison to MW limits may be scale-mismatched.")
-            
-            if len(cf_dispatch) == len(gen_pmin):
-                min_vio = cf_dispatch < gen_pmin - 1e-3
-                max_vio = cf_dispatch > gen_pmax + 1e-3
-                if np.any(min_vio | max_vio):
-                    print("  WARNING: Dispatch out of generation bounds (gen_p_min / gen_p_max):")
-                    for i in np.where(min_vio | max_vio)[0]:
-                        viol_val = cf_dispatch[i]
-                        bounds = (gen_pmin[i], gen_pmax[i])
-                        print(f"    Gen {i}: {viol_val:.3f} not in {bounds}")
-            else:
-                print(f"  (Skipping bounds check: dispatch dim {len(cf_dispatch)} != n_gen {len(gen_pmin)})")
 
             # Persist original vs counterfactual state vector
             for f_idx, feature in enumerate(feature_names):
+                if f_idx not in rho_indices:
+                    continue  # only keep rho features in the CSV
+
                 orig_val = float(state_np[f_idx])
                 cf_val = float(cf_np[f_idx])
                 delta = cf_val - orig_val
                 fault_flag = (
-                    f_idx in rho_indices and (orig_val > args.overload_threshold or cf_val > args.overload_threshold)
+                    orig_val > args.overload_threshold or cf_val > args.overload_threshold
                 )
-                cf_violation = f_idx in rho_indices and cf_val > args.overload_threshold
+                next_rho_val = float(next_rho_vals[list(rho_indices).index(f_idx)]) if rho_indices else float('nan')
                 writer.writerow([
                     idx + 1,
                     feature,
                     orig_val,
                     cf_val,
-                    delta,
+                    next_rho_val,
                     int(fault_flag),
-                    int(cf_violation),
                 ])
 
             # Noisy counterfactual robustness: perturb state, regenerate CF, and report diffs
@@ -330,7 +298,7 @@ def main() -> None:
                 max_abs_diff = np.abs(diffs_np).max(axis=0)
                 print("  Noisy CF robustness (noise std={:.4f}, {} samples):".format(noise_std, args.n_noisy))
                 print("    mean_diff (L1 summary): {:.4f}".format(np.mean(np.abs(mean_diff))))
-                print("    max_abs_diff (L∞ summary): {:.4f}".format(np.max(max_abs_diff)))
+                print("    max_abs_diff (L summary): {:.4f}".format(np.max(max_abs_diff)))
                 mean_diff_series.append(float(np.mean(np.abs(mean_diff))))
                 max_diff_series.append(float(np.max(max_abs_diff)))
 
@@ -346,7 +314,7 @@ def main() -> None:
         plt.xticks(cases)
         plt.legend()
         plt.tight_layout()
-        plt.savefig(args.diff_plot, dpi=200, format="pdf")
+        plt.savefig(args.diff_plot, dpi=200)
         print(f"Diff plot saved to {args.diff_plot}")
 
     print(f"Comparison table written to {args.comparison_file}")

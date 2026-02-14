@@ -75,7 +75,7 @@ def ensure_small_action_change(agent: Agent, state: np.ndarray, noise_sigma: flo
 
 def main():
     parser = argparse.ArgumentParser(description="SHAP stability under tiny noise")
-    parser.add_argument("--run-name", required=True, help="Checkpoint run name (without .tar)")
+    parser.add_argument("--checkpoint", required=True, help="Checkpoint run name (without .tar)")
     parser.add_argument("--n-samples", type=int, default=256, help="Background samples for SHAP")
     parser.add_argument("--n-test", type=int, default=20, help="Number of clean test states")
     parser.add_argument("--n-noisy", type=int, default=20, help="Noisy perturbations per test state")
@@ -88,9 +88,9 @@ def main():
     set_random_seed(args.seed)
     device = set_torch(n_threads=1)
 
-    checkpoint_path = f"RL2Grid/checkpoint/{args.run_name}.tar"
+    checkpoint_path = f"RL2Grid/checkpoint/{args.checkpoint}.tar"
     if not os.path.exists(checkpoint_path):
-        checkpoint_path = f"checkpoint/{args.run_name}.tar"
+        checkpoint_path = f"checkpoint/{args.checkpoint}.tar"
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint {checkpoint_path} not found")
 
@@ -180,8 +180,11 @@ def main():
         clean_i = shap_clean[idx]
         noisy_i = shap_noisy[idx]  # (n_noisy, features, outputs)
         diffs = np.abs(noisy_i - clean_i[None, :, :])
-        eps = 1e-9
-        rel_diffs = diffs / (np.abs(clean_i)[None, :, :] + eps)
+        # Use a percentile-based floor so near-zero SHAP values do not explode relative percentages.
+        mag = np.abs(clean_i)
+        median_mag = np.median(mag)
+        denom_floor = max(median_mag * 0.1, 1e-6)
+        rel_diffs = diffs / np.maximum(mag[None, :, :], denom_floor)
         per_noise_mean = rel_diffs.reshape(args.n_noisy, -1).mean(axis=1)
         per_noise_max = rel_diffs.reshape(args.n_noisy, -1).max(axis=1)
         mean_rel = per_noise_mean.mean() * 100.0
@@ -205,7 +208,7 @@ def main():
         f"  mean(max |ΔSHAP|) %: {mean_max_diffs_arr.mean():.2f}% ± {mean_max_diffs_arr.std():.2f}%"
     )
 
-    # Plot summary (separate figures, saved as PDF)
+    # Plot summary (separate figures, saved as png)
     x = np.arange(1, len(mean_diffs_arr) + 1, dtype=int)
     base, _ = os.path.splitext(args.output)
 
@@ -215,8 +218,8 @@ def main():
     ax1.set_ylabel("Mean relative difference (%)")
     ax1.set_xticks(x)
     fig1.tight_layout()
-    out1 = f"{base}_mean.pdf"
-    fig1.savefig(out1, bbox_inches="tight", format="pdf")
+    out1 = f"{base}_mean.png"
+    fig1.savefig(out1, bbox_inches="tight", format="png")
     print(f"Saved plot to {out1}")
 
     fig2, ax2 = plt.subplots(figsize=(7, 5))
@@ -225,8 +228,8 @@ def main():
     ax2.set_ylabel("Mean of per-noise max diff (%)")
     ax2.set_xticks(x)
     fig2.tight_layout()
-    out2 = f"{base}_mean_max.pdf"
-    fig2.savefig(out2, bbox_inches="tight", format="pdf")
+    out2 = f"{base}_mean_max.png"
+    fig2.savefig(out2, bbox_inches="tight", format="png")
     print(f"Saved plot to {out2}")
 
 

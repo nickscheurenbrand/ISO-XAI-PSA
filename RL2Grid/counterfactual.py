@@ -1,27 +1,21 @@
 """Counterfactual state generation for PPO agents.
 
 This module implements the Counterfactual State technique described by Olson et al. (2019),
-adapted for frozen PPO agents trained on redispatch (continuous control) tasks.
+adapted for frozen PPO agents trained on redispatch tasks.
 
-Observations are assumed to be vector-valued (e.g., concatenated grid measurements) rather
-than images. The auxiliary networks operate on flattened tensors that share the same shape
+The auxiliary networks operate on flattened tensors that share the same shape
 as the PPO observation space. The PPO agent remains frozen while the counterfactual encoder,
 generator, discriminator, and Wasserstein auto-encoder are trained.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Deque, Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-
-
-# -----------------------------------------------------------------------------
-# Utility helpers
-# -----------------------------------------------------------------------------
 
 
 def _default_device() -> torch.device:
@@ -31,19 +25,13 @@ def _default_device() -> torch.device:
 def _agent_feature_extractor(agent: nn.Module) -> Callable[[torch.Tensor], torch.Tensor]:
     if hasattr(agent, "feature_extractor"):
         return agent.feature_extractor
-    if hasattr(agent, "actor") and hasattr(agent.actor, "features"):
-        return agent.actor.features
     def identity(x: torch.Tensor) -> torch.Tensor:
         return x.view(x.size(0), -1) if x.dim() > 2 else x
     return identity
 
 
 def _agent_policy_head(agent: nn.Module) -> Callable[[torch.Tensor], torch.Tensor]:
-    if hasattr(agent, "policy_head"):
-        return agent.policy_head
-    if hasattr(agent, "actor"):
-        return agent.actor
-    raise AttributeError("Agent must expose a policy head (policy_head or actor)")
+    return agent.actor
 
 
 def _flatten(states: torch.Tensor) -> torch.Tensor:
@@ -85,11 +73,6 @@ def _confidence_loss(policy_logits: torch.Tensor, target_action: torch.Tensor) -
     probs = torch.softmax(policy_logits, dim=-1)
     loss = -torch.log((probs * target_action).sum(dim=-1) + 1e-8)
     return loss.mean()
-
-
-# -----------------------------------------------------------------------------
-# Neural network blocks
-# -----------------------------------------------------------------------------
 
 
 class Encoder(nn.Module):
@@ -171,10 +154,6 @@ class WassersteinAE(nn.Module):
     def decode(self, z_w: torch.Tensor) -> torch.Tensor:
         return self.decoder(z_w)
 
-
-# -----------------------------------------------------------------------------
-# Counterfactual trainer
-# -----------------------------------------------------------------------------
 
 
 @dataclass
@@ -269,10 +248,6 @@ class CounterfactualTrainer:
             metrics[key] /= max(1, batches)
         return metrics
 
-
-# -----------------------------------------------------------------------------
-# Counterfactual generation
-# -----------------------------------------------------------------------------
 
 
 def generate_counterfactual(

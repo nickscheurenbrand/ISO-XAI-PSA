@@ -20,7 +20,6 @@ def get_feature_names(g2op_env, args, config):
     env_config = config['environments']
     state_attrs = config['state_attrs']
     
-    # Replicate logic from env/utils.py to get obs_attrs
     obs_attrs = list(state_attrs['default']) # Copy
     if env_config[env_id]['maintenance']: obs_attrs += state_attrs['maintenance']
 
@@ -45,8 +44,6 @@ def get_feature_names(g2op_env, args, config):
         elif attr in ['storage_charge', 'storage_power_target', 'storage_power', 'storage_theta']:
              names = [f"{attr}_{i}" for i in range(g2op_env.n_storage)]
         else:
-            # Fallback for unknown attributes, try to guess size or just append attr name
-            # This might cause length mismatch if attr is a vector
             print(f"Warning: Unknown attribute {attr}, cannot determine feature names.")
             names = [attr]
             
@@ -56,16 +53,16 @@ def get_feature_names(g2op_env, args, config):
 
 def main():
     parser = argparse.ArgumentParser(description="Compute SHAP values for a trained PPO agent.")
-    parser.add_argument("--run-name", type=str, required=True, help="Name of the run to load (without .tar)")
-    parser.add_argument("--n-samples", type=int, default=100, help="Number of background samples")
-    parser.add_argument("--n-test", type=int, default=10, help="Number of test samples to explain")
+    parser.add_argument("--checkpoint", type=str, required=True, help="Name of the run to load (without .tar)")
+    parser.add_argument("--n-samples", type=int, default=1000, help="Number of background samples")
+    parser.add_argument("--n-test", type=int, default=100, help="Number of test samples to explain")
     
     args, unknown = parser.parse_known_args()
     
-    checkpoint_path = f"RL2Grid/checkpoint/{args.run_name}.tar"
-    # Fallback to checking current dir if not found
+    checkpoint_path = f"RL2Grid/checkpoint/{args.checkpoint}.tar"
+    
     if not os.path.exists(checkpoint_path):
-        checkpoint_path = f"checkpoint/{args.run_name}.tar"
+        checkpoint_path = f"checkpoint/{args.checkpoint}.tar"
         
     if not os.path.exists(checkpoint_path):
         print(f"Error: Checkpoint {checkpoint_path} not found.")
@@ -83,10 +80,6 @@ def main():
 
     # Set up environment
     print("Creating environment...")
-    # We need to ensure we are in the right directory for relative paths in env config
-    # auxiliary_make_env uses args.env_config_path which defaults to "scenario.json"
-    # It expects it in env/scenario.json usually or relative.
-    # Let's assume the script is run from the root of the repo.
     
     def make_env():
         env, _ = auxiliary_make_env(train_args, resume_run=False, test=True)
@@ -107,22 +100,14 @@ def main():
     background_obs = []
     obs, _ = env.reset()
     
-    # We need to flatten observation if it's not already flat, but Agent expects flat usually?
-    # Agent.init uses np.prod(envs.single_observation_space.shape) for input dim.
-    # But the forward pass expects the shape that comes out of env.
-    # Let's check shape.
     print(f"Observation shape: {obs.shape}")
     
     for _ in range(args.n_samples):
         background_obs.append(obs[0])
-        # Get action from agent to step env
         with th.no_grad():
             t_obs = th.tensor(obs).float()
-            # Use get_eval_action for deterministic path if possible, or get_action
             action = agent.get_eval_continuous_action(t_obs)
                 
-        # Step environment
-        # Action needs to be numpy
         action_np = action.detach().numpy()
         obs, _, terminated, truncated, _ = env.step(action_np)
             
@@ -173,9 +158,6 @@ def main():
     
     try:
         # Access the inner grid2op environment
-        # env is SyncVectorEnv, env.envs[0] is the GymEnv
-        # But SyncVectorEnv might not expose envs directly if it's a lambda
-        # Actually SyncVectorEnv stores envs in self.envs
         gym_env = env.envs[0]
         g2op_env = gym_env.init_env
         
@@ -194,11 +176,8 @@ def main():
     n_outputs = len(shap_values_list)
     print(f"Model has {n_outputs} generator outputs. SHAP values normalized as list of matrices.")
 
-    # Calculate global importance (sum of mean abs SHAP across all outputs)
-    mean_shap = np.sum([np.abs(sv).mean(axis=0) for sv in shap_values_list], axis=0)
-
     # 1. Global Feature Importance (Bar Chart)
-    output_bar = "shap_summary_bar.pdf"
+    output_bar = "shap_summary_bar.png"
     print(f"Saving global feature importance (all actions) to {output_bar}...")
     plt.figure(figsize=(12, 9))
     generator_titles = [f"Generator {i+1}" for i in range(n_outputs)]
@@ -217,20 +196,20 @@ def main():
     plt.xlabel("mean(|SHAP value|)")
     plt.tight_layout()
     
-    # Save the figure as pdf
-    plt.savefig(output_bar, bbox_inches='tight', format='pdf')
+    # Save the figure as png
+    plt.savefig(output_bar, bbox_inches='tight')
     plt.close()
 
     # 2. Beeswarm per generator
     print("Saving beeswarm plots for each generator...")
     for idx, shap_vals in enumerate(shap_values_list):
         label = generator_titles[idx] if idx < len(generator_titles) else f"Generator {idx+1}"
-        output_bee = f"shap_summary_beeswarm_gen{idx+1}.pdf"
+        output_bee = f"shap_summary_beeswarm_gen{idx+1}.png"
         print(f" - {label} -> {output_bee}")
         plt.figure()
         shap.summary_plot(shap_vals, test_data, feature_names=feature_names, max_display=10, show=False)
-        #plt.title(label)
-        plt.savefig(output_bee, bbox_inches='tight', format='pdf')
+        plt.title(label)
+        plt.savefig(output_bee, bbox_inches='tight')
         plt.close()
         
     print("Done.")
