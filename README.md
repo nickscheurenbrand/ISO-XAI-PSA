@@ -11,6 +11,7 @@ Quick commands to run the training and three explainability scripts. Run them fr
 ## Training
 Training command used for the bus14 PPO checkpoint:
 - `python main.py --alg PPO --env-id bus14 --action-type redispatch`
+There is, however, already a trained model in the folder that can be used
 
 ## SHAP summary
 - Command: `python explain_shap.py --checkpoint final_PPO_bus14`
